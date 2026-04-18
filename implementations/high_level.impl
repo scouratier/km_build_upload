@@ -1,0 +1,242 @@
+People are leaving GitHub, and I'm stuck with some GH actions that no longer work. 
+
+So we are going to build our own!
+
+Requirements:
+- no external action dependencies. All the work needs to be done by this single action.
+
+What it does:
+See docker-image.yml for the flow we want to reproduce
+In plain english:
+- trigger when a specific branch is updated
+- read a version file called "version" in the root of the folder. Create it if it does not exist
+- bump it's version following semver patterns
+- write the new version to the "version" file
+- add a tag in gh with that version
+- build the docker image
+- upload the docker image with the version tag to Docker Hub
+- update the "latest" tag to be the latest version that was updated
+
+The user and pw for Docker Hub should stay as DOCKER_HUB_USERNAME and DOCKER_HUB_ACCESS_TOKEN
+
+---
+## Pre-Implementation Check Feedback
+
+QUESTION: How should the action determine which semantic version part (Major, Minor, or Patch) to bump? Should we default to Patch, or use commit message conventions (like Conventional Commits)?
+ANSWER: Default to patch. Can we also add something like #Minor and #Major in the commit messages to bump those instead?
+
+QUESTION: Does the rule "no external action dependencies" mean we cannot even use the standard `actions/checkout`? If so, our action will need to manually authenticate and `git clone` the repository first. Usually, custom actions assume the caller workflow has already run checkout. Can we assume the code is already checked out?
+ANSWER: Ok, this is a good nuance. I do not want any dependency on other Github user actions. So standard actions provided by Github are fine to use. Let's also allow actions from large organizations that I know will support their tools (docker for example)
+
+QUESTION: The spec mentions "trigger when a specific branch is updated". In GitHub Actions, the trigger mechanism (`on: push: branches: [main]`) is defined in the caller repository's workflow YAML, not the custom action code itself. I assume we are building the action logic, and the caller repository will just specify when to invoke it. Is that correct?
+ANSWER: Yes, it was meant as a "make sure the branch is configurable and not just hard coded to "main"". So correct.
+
+QUESTION: To commit and push the updated `version` file and tag, Git requires a configured user name and email. Should we use the generic `github-actions[bot]` identity, or do you want this to be configurable via action inputs?
+ANSWER: The bot identity is fine for now. I don't really know what the upside/downsides are. 
+
+QUESTION: For the Docker build step, can we assume the `Dockerfile` is always in the root directory `.` and the build context is `.`, or should these be exposed as configurable inputs for more flexibility?
+ANSWER: Assume the Dockerfile is always in the root dir. 
+
+QUESTION: If multiple PRs are merged in rapid succession, there could be race conditions when reading, bumping, and pushing the `version` file. Do we need to handle Git pull rebasing or retry logic, or is this outside the current scope?
+ANSWER: Outside of scope, but make a not of this as possible tech debt
+
+---
+## Pre-Implementation Check Feedback - Round 2
+
+Notes from reviewing docker-image.yml alongside the answers:
+
+### Observation: Typo in reference file
+Line 29 of docker-image.yml has `$(path)` which should be `$(patch)`. Not a blocker since we're replacing this, but worth noting.
+Thank you =)
+
+### Architecture Rethink
+Since you've clarified that standard GitHub actions and actions from large orgs (like Docker) are allowed, the only third-party actions we actually need to replace are:
+- `anothrNick/github-tag-action@v1` (version bump + tag)
+- `dolittle/write-version-to-file-action@v2` (write version to file)
+
+The Docker actions (`docker/login-action`, `docker/build-push-action`) are maintained by Docker Inc. and are fine to keep.
+
+QUESTION: Given this, should we build a focused Composite Action that only handles version bumping, writing the version file, and git tagging (replacing the two third-party actions), while keeping the Docker org actions for login/build/push? This would be simpler, more maintainable, and follows the Unix philosophy of "do one thing well". The alternative is reimplementing everything (including Docker login/build/push) in Go, which duplicates well-maintained Docker tooling.
+ANSWER: Let's use the focused approach. 
+
+### Version Tag Format
+
+QUESTION: The reference workflow uses `WITH_V: true`, meaning tags look like `v1.0.3` (with a `v` prefix). Should we follow this convention? And should the `version` file contain the `v` prefix too (e.g., `v1.0.3`) or just the bare number (`1.0.3`)?
+ANSWER: I actually hate the "v1.x.2" format. Let's just keep "1.2.3"
+
+### Docker Image Name
+
+QUESTION: In the reference workflow, the Docker image name is hardcoded as `stableconfiggenerator`. This action will be used across multiple repositories. Should the Docker image name be a required input parameter to the action, or should it default to the GitHub repository name (e.g., repo `km_brain_fe` → image `km_brain_fe`)?
+ANSWER: Oh! good catch. This should not be hardcoded. Can we just use the name of the repo for the name of image please. 
+
+### Commit Message Scanning for #Minor / #Major
+
+QUESTION: You want `#Minor` and `#Major` hashtags in commit messages to control the bump level. When a PR is merged, there could be multiple commits. Should we scan only the HEAD commit message (the merge commit), or scan all commits in the push event? Scanning only the merge commit is simpler and gives the person merging explicit control.
+ANSWER: Let's kick this can down the road. It's not a featuer I really need right now. Let's add it to notes of things we may want to add later
+
+### Version File as Source of Truth
+
+QUESTION: In the reference workflow, the version is determined by git tags (via `github-tag-action`) and then written to the `version` file. But your spec says "read a version file... bump its version". These are two different approaches: (A) git tags are the source of truth and the file is just a copy, or (B) the file is the source of truth and tags mirror it. Which do you prefer? I'd recommend (B) - file as source of truth - because it's simpler, doesn't require `fetch-depth: 0`, and the version is always visible in the repo.
+ANSWER: B
+
+### Tech Debt Note
+As discussed, concurrent merge race conditions on the version file are out of scope. Logging this for future consideration: if two workflows run simultaneously, both could read the same version, bump to the same value, and one push will fail. A future enhancement could use GitHub's concurrency groups or implement retry logic.
+--> Log this in the README.md please (and other notes)
+
+---
+## Pre-Implementation Check Feedback - Round 3
+
+### Summary of Decisions So Far
+For reference, here is what we've locked in:
+- **Scope**: Focused Composite Action — handles version bump, version file write, and git tagging only. Docker login/build/push stays with Docker's official actions.
+- **Language**: Go (run via `go run` on the runner)
+- **Version bumping**: Patch only for now. #Minor/#Major commit scanning deferred.
+- **Version format**: No `v` prefix. File contains `1.2.3`, tag is `1.2.3`.
+- **Version source of truth**: The `version` file in the repo root.
+- **Docker image name**: Derived automatically from the GitHub repository name.
+- **Dockerfile location**: Always root `.`
+- **Git identity**: `github-actions[bot]`
+- **Race conditions**: Out of scope, logged as tech debt.
+
+### Action Inputs & Outputs Contract
+
+The action needs a clear contract. Here's what I'm proposing:
+
+**Inputs:**
+- None required (all derived from environment)
+
+**Outputs (exposed to subsequent workflow steps):**
+- `new_version` — the bumped version string (e.g., `1.2.4`)
+- `image_name` — the derived Docker image name (e.g., `username/km_brain_fe`)
+
+The caller workflow would use these outputs in the Docker build/push steps, like:
+```yaml
+tags: |
+  ${{ secrets.DOCKER_HUB_USERNAME }}/${{ steps.bump.outputs.image_name }}:latest
+  ${{ secrets.DOCKER_HUB_USERNAME }}/${{ steps.bump.outputs.image_name }}:${{ steps.bump.outputs.new_version }}
+```
+
+QUESTION: Does this input/output contract look right? Or would you prefer additional inputs, for example a `default_bump` input so different repos could default to minor instead of patch?
+ANSWER: This looks correct. I'm sure I'll find issues once I start using it =), but that fine for this first try
+
+### Caller Workflow Template
+
+Since our action only handles version bumping and tagging, each consuming repo will need a workflow YAML that calls our action and then the Docker actions. I plan to include a ready-to-use template workflow in the README.
+
+QUESTION: Should we also include this template as a file in the repo (e.g., `examples/workflow.yml`) so it can be easily copied, or is documentation in the README sufficient?
+ANSWER: Yes please. I will need to apply this so several repos
+
+### Git Push Permissions
+
+QUESTION: For the action to push the updated `version` file and the new tag back to the repo, the default `GITHUB_TOKEN` needs write permissions. In newer repos, the default token is read-only. We'll need to document that the caller workflow must set `permissions: contents: write` — or alternatively, the repo settings must enable "Allow GitHub Actions to create and approve pull requests". Are you aware of this, and is just documenting it sufficient?
+ANSWER: Document it
+
+### Edge Case: Initial Run (No version file)
+
+QUESTION: On the very first run when no `version` file exists, should the action create it with `0.0.1` (after bumping from implicit `0.0.0`) or start at `1.0.0`? I'd recommend `0.0.1` since it signals "pre-release / initial".
+ANSWER: 0.0.1
+
+### Repo Structure
+
+Here's the proposed file structure for this repository:
+
+```
+km_build_upload/
+├── action.yml              # Composite action definition
+├── main.go                 # Go logic (version bump, file write, git tag)
+├── go.mod                  # Go module file (no external deps, stdlib only)
+├── implementations/
+│   ├── high_level.impl     # This spec file
+│   └── docker-image.yml    # Reference workflow
+├── examples/
+│   └── workflow.yml        # Ready-to-use caller workflow template
+├── PROJECT.md
+└── README.md
+```
+
+QUESTION: Does this structure look good? Any files you'd like added or reorganized?
+ANSWER: Perfect!
+
+### Future Enhancements (Parked)
+Logging these for future reference as requested:
+- `#Minor` / `#Major` commit message scanning for non-patch bumps
+- Concurrent merge race condition handling (GitHub concurrency groups or retry logic)
+- Configurable Dockerfile path and build context
+- Configurable git identity
+
+---
+## Pre-Implementation Check Feedback - Round 4 (Final)
+
+All major decisions are locked in. This final round covers the precise implementation behavior to make sure we build it right the first time.
+
+### Go Execution on the Runner
+
+The composite action will run `go run main.go`. A few things to note:
+- GitHub's `ubuntu-latest` runners come with Go pre-installed (currently Go 1.22+). We'll target Go 1.21+ for the `go.mod` to stay safe.
+- `go run` compiles and executes in one step. Since our code is stdlib-only with no external deps, there's no `go mod download` needed.
+- The Go process will run in the workspace directory (`$GITHUB_WORKSPACE`), which is where the checked-out repo lives. This means the `version` file path is simply `./version`.
+
+QUESTION: Are you comfortable with relying on the runner's pre-installed Go, or would you prefer we pin a specific Go version via `actions/setup-go` as a step before our action runs? Relying on the runner's Go is simpler but means the Go version could change when GitHub updates their runner images.
+ANSWER: This looks fine. I'm sure we will all regret this in 18 months.
+
+### Composite Action Output Mechanism
+
+For a composite action to expose outputs to subsequent steps, the Go code needs to write to the `$GITHUB_OUTPUT` file. The format is:
+```
+echo "new_version=1.2.4" >> $GITHUB_OUTPUT
+```
+In Go, we'll do this by opening the file at `os.Getenv("GITHUB_OUTPUT")` and appending the key-value pairs. This is the official GitHub mechanism — no workarounds needed.
+
+No question here, just making sure you're aware of the approach.
+
+### Error Handling Strategy
+
+QUESTION: If any step fails (e.g., version file is malformed, git push fails, etc.), should the Go program simply exit with a non-zero code and print the error to stderr (which will naturally fail the workflow step), or do you want more structured error reporting (e.g., writing to `$GITHUB_STEP_SUMMARY` for a nice error card in the Actions UI)?
+ANSWER: It would be nice to get errors that make it obvious what I need to fix. Standard errors may be enough for that. I don't care about the format, I do care about the content of the error.
+
+### Git Workflow: Commit and Push
+
+The Go code will need to commit the bumped `version` file and push. Here's the exact sequence:
+1. `git config user.name "github-actions[bot]"`
+2. `git config user.email "github-actions[bot]@users.noreply.github.com"`
+3. `git add version`
+4. `git commit -m "chore: bump version to 1.2.4"`
+5. `git tag 1.2.4`
+6. `git push origin HEAD`
+7. `git push origin 1.2.4`
+
+QUESTION: The commit message format `"chore: bump version to X.Y.Z"` — is this fine, or do you have a different convention you'd like?
+ANSWER: Looks fine.
+
+### Testing Strategy
+
+Since this is a GitHub Action, true end-to-end testing requires pushing to a repo with the action configured. However, we can unit test the Go logic locally:
+- Version parsing and bumping (`0.0.0` → `0.0.1`, `1.2.9` → `1.2.10`, malformed input handling)
+- Version file read/write
+- Git command construction
+
+QUESTION: Do you want me to write Go unit tests for the version logic, or is manual testing via a test repo sufficient for this first iteration?
+ANSWER: Tests are fine. I will be doing real world testing tho
+
+### Go/No-Go Checklist
+
+Before we start coding, confirm that all of these are correct:
+
+| Decision | Value |
+|---|---|
+| Action type | Composite |
+| Logic language | Go (stdlib only) |
+| Version source of truth | `version` file |
+| Initial version | `0.0.1` |
+| Bump strategy | Patch only |
+| Version format | `1.2.3` (no `v` prefix) |
+| Git tag format | `1.2.3` (no `v` prefix) |
+| Docker image name | Derived from repo name |
+| Git identity | `github-actions[bot]` |
+| Action outputs | `new_version`, `image_name` |
+| Allowed dependencies | GitHub official actions, Docker org actions |
+| Example workflow | Yes, in `examples/workflow.yml` |
+| Permissions | Documented, `contents: write` required |
+
+QUESTION: Does this checklist look correct? If so, I'm ready to write the implementation plan and start coding.
+ANSWER: yep

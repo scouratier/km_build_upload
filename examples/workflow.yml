@@ -1,0 +1,45 @@
+# Example workflow for using the km_build_upload action.
+# Copy this file to your repository at .github/workflows/docker-publish.yml
+# and adjust the branch name as needed.
+
+name: Build and Publish Docker Image
+
+on:
+  push:
+    branches: [ "main" ]  # Change this to your target branch
+
+permissions:
+  contents: write  # Required for the action to push version commits and tags
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Check out the repository
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Step 2: Bump version, write version file, commit, tag, and push
+      - name: Bump version and tag
+        id: bump
+        uses: scouratier/km_build_upload@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 3: Log in to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      # Step 4: Build and push the Docker image with version and latest tags
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/${{ steps.bump.outputs.image_name }}:latest
+            ${{ secrets.DOCKER_HUB_USERNAME }}/${{ steps.bump.outputs.image_name }}:${{ steps.bump.outputs.new_version }}
