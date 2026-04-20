@@ -111,7 +111,7 @@ func ExtractRepoName(githubRepo string) (string, error) {
 		return "", fmt.Errorf("GITHUB_REPOSITORY %q has unexpected format: expected \"owner/repo\"", githubRepo)
 	}
 
-	return parts[1], nil
+	return strings.ToLower(parts[1]), nil
 }
 
 // runGit executes a git command and returns its combined output.

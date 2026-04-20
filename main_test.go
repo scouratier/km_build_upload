@@ -270,6 +270,11 @@ func TestExtractRepoName(t *testing.T) {
 			want:  "km_brain_fe",
 		},
 		{
+			name:  "mixed case",
+			input: "Scouratier/KM_Brain_FE",
+			want:  "km_brain_fe",
+		},
+		{
 			name:  "with whitespace",
 			input: "  owner/repo  ",
 			want:  "repo",
