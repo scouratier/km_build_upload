@@ -201,7 +201,18 @@ func run() error {
 
 	// Step 7: Push commit and tag
 	fmt.Println("=== Step 7: Pushing to remote ===")
-	if _, err := runGit("push", "origin", "HEAD"); err != nil {
+	branch := os.Getenv("GITHUB_REF_NAME")
+	if branch == "" {
+		branch = "main"
+	}
+
+	// Pull with rebase to handle race conditions if another commit was pushed during the build
+	fmt.Printf("Pulling latest changes from origin/%s (rebase)...\n", branch)
+	if _, err := runGit("pull", "--rebase", "origin", branch); err != nil {
+		fmt.Printf("Warning: git pull --rebase failed: %v\n", err)
+	}
+
+	if _, err := runGit("push", "origin", "HEAD:"+branch); err != nil {
 		return fmt.Errorf("step 7 failed (push HEAD): %w\nHint: does your GITHUB_TOKEN have 'contents: write' permission?", err)
 	}
 	if _, err := runGit("push", "origin", tag); err != nil {

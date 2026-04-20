@@ -59,6 +59,6 @@ Downstream steps (in the caller workflow) use the outputs for Docker login, buil
 ## Future Enhancements
 
 - `#Minor` / `#Major` commit message scanning for non-patch bumps
-- Concurrent merge race condition handling (GitHub concurrency groups or retry logic)
+- Advanced concurrent merge race condition handling (currently uses basic `git pull --rebase`)
 - Configurable Dockerfile path and build context
 - Configurable git identity

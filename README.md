@@ -112,7 +112,7 @@ This action requires a runner with Go pre-installed (included in `ubuntu-latest`
 
 ## Known Limitations & Tech Debt
 
-- **Concurrent merges**: If multiple pushes trigger the workflow simultaneously, both may read the same version, bump to the same value, and one push will fail. A future enhancement could use [GitHub concurrency groups](https://docs.github.com/en/actions/using-jobs/using-concurrency) or implement retry logic.
+- **Concurrent merges**: The action attempts to handle race conditions by pulling with `--rebase` before pushing. If multiple actions trigger simultaneously and modify the same files in conflicting ways, the rebase may fail. For highly active repositories, using [GitHub concurrency groups](https://docs.github.com/en/actions/using-jobs/using-concurrency) is recommended.
 - **Patch only**: Currently only bumps the patch version. A future enhancement could scan commit messages for `#Minor` or `#Major` to control the bump level.
 - **Dockerfile location**: Assumes the Dockerfile is always in the repository root.
 - **Git identity**: Hardcoded to `github-actions[bot]`. Could be made configurable.
