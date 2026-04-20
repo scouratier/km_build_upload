@@ -29,6 +29,7 @@ The action uses GitHub's composite action mechanism to run a Go program directly
 | Docker steps | Delegated to Docker's official actions | Well-maintained; follows "do one thing well" philosophy |
 | Error handling | Descriptive stderr messages with step context and hints | Focus on actionable error content |
 | Git identity | `github-actions[bot]` | Standard GitHub bot identity |
+| Image Name | Lowercase only | Ensures compatibility with Docker Hub naming requirements |
 
 ### Flow
 
